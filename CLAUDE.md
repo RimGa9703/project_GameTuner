@@ -18,7 +18,7 @@
 | ★ 자동 최적화 (PC 환경 감지 → 추천 항목 선택 → 확인 후 적용) | 구현 완료 |
 | 앱 내 업데이트 (GitHub Release 조회 → EXE 자기 교체) | 구현 완료 |
 | GitHub 저장소 생성 | 완료 — `RimGa9703/project_GameTuner` |
-| 첫 푸시 / Release 생성 확인 | **미완료** |
+| 첫 푸시 / Release 생성 확인 | 완료 — 공개 저장소, Actions 성공, Release `v1.0.1` (2026-11-21) |
 | `Updater.Repo` 상수 | 완료 — `RimGa9703/project_GameTuner` |
 
 ### 검증 수준 (중요)
@@ -160,8 +160,8 @@ build.bat
 
 ## 8. 남은 할 일 (우선순위 순)
 
-1. [ ] GitHub 공개 저장소 생성 → `Updater.Repo` 수정 → 첫 푸시 → Release 생성 확인
-2. [ ] Windows에서 첫 빌드 — UI 컴파일 오류 수정
+1. [x] GitHub 공개 저장소 생성 → `Updater.Repo` 수정 → 첫 푸시 → Release 생성 확인
+2. [x] Windows에서 첫 빌드 — 오류 없음 (경고 WFAC010: DPI 설정을 manifest 대신 csproj로 옮기라는 권고, 무시함)
 3. [ ] 실기 테스트: 항목별 적용 → 상태 "적용됨" → 되돌리기 → 원래 값 복구 확인 (`backup.json` 내용도 확인)
 4. [ ] 위 "검증 수준"에 적은 파싱 4건을 실기에서 확인
 5. [ ] 업데이트 흐름 실기 테스트 (Release 2개 이상 필요)
