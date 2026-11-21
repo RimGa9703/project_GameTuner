@@ -278,6 +278,100 @@ class SysEnv
     }
 }
 
+// ───────────────────────── PC 사양 ─────────────────────────
+
+static class Specs
+{
+    // CIM으로 한 번에 조회. 값에 한글이 섞일 수 있어 UTF-8로 받음
+    // ponytail: GPU 메모리는 Win32_VideoController.AdapterRAM이 4GB에서 잘려서 표시 안 함. 필요하면 레지스트리 HardwareInformation.qwMemorySize로 확장
+    const string ps =
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
+        "$c=Get-CimInstance Win32_Processor | Select-Object -First 1; " +
+        "'cpu=' + $c.Name.Trim() + '|' + $c.NumberOfCores + '|' + $c.NumberOfLogicalProcessors; " +
+        "foreach($g in Get-CimInstance Win32_VideoController){ 'gpu=' + $g.Name + '|' + $g.DriverVersion + '|' + $g.CurrentHorizontalResolution + '|' + $g.CurrentVerticalResolution + '|' + $g.CurrentRefreshRate }; " +
+        "$m=@(Get-CimInstance Win32_PhysicalMemory); 'ram=' + ($m | Measure-Object Capacity -Sum).Sum + '|' + $m[0].ConfiguredClockSpeed + '|' + $m.Count; " +
+        "$b=Get-CimInstance Win32_BaseBoard; 'board=' + $b.Manufacturer + ' ' + $b.Product; " +
+        "$o=Get-CimInstance Win32_OperatingSystem; $v=(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').DisplayVersion; 'os=' + $o.Caption + '|' + $v + '|' + $o.BuildNumber; " +
+        "foreach($d in Get-PhysicalDisk){ 'disk=' + $d.FriendlyName + '|' + $d.MediaType + '|' + $d.Size }";
+
+    public static string Query()
+    {
+        string output = Native.Run("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"{ps}\"", System.Text.Encoding.UTF8).Output;
+        var sb = new System.Text.StringBuilder();
+        foreach (string raw in output.Split('\n'))
+        {
+            string line = raw.Trim();
+            int eq = line.IndexOf('=');
+            if (eq <= 0)
+            {
+                continue;
+            }
+            string key = line.Substring(0, eq);
+            string[] p = line.Substring(eq + 1).Split('|');
+            switch (key)
+            {
+                case "cpu":
+                    sb.AppendLine($"CPU        : {p[0]} ({At(p, 1)}코어 / {At(p, 2)}스레드)");
+                    break;
+                case "gpu":
+                    string screen = "";
+                    if (At(p, 2) != "" && At(p, 4) != "")
+                    {
+                        screen = $" — {At(p, 2)}x{At(p, 3)} @ {At(p, 4)}Hz";
+                    }
+                    sb.AppendLine($"GPU        : {p[0]} (드라이버 {At(p, 1)}){screen}");
+                    break;
+                case "ram":
+                    sb.AppendLine($"RAM        : {Gib(At(p, 0))} ({At(p, 1)} MHz, {At(p, 2)}개)");
+                    break;
+                case "board":
+                    sb.AppendLine($"메인보드   : {p[0]}");
+                    break;
+                case "os":
+                    sb.AppendLine($"Windows    : {p[0]} {At(p, 1)} (빌드 {At(p, 2)})");
+                    break;
+                case "disk":
+                    sb.AppendLine($"디스크     : {p[0]} — {At(p, 1)}, {Gb(At(p, 2))}");
+                    break;
+            }
+        }
+        if (sb.Length == 0)
+        {
+            return "사양을 조회하지 못했습니다.\n" + output.Trim();
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    static string At(string[] parts, int index)
+    {
+        if (index < parts.Length)
+        {
+            return parts[index].Trim();
+        }
+        return "";
+    }
+
+    // RAM은 1024 단위
+    static string Gib(string bytes)
+    {
+        if (long.TryParse(bytes, out long n) == false)
+        {
+            return "알 수 없음";
+        }
+        return $"{n / (1024L * 1024 * 1024)} GB";
+    }
+
+    // 디스크는 제조사 표기와 같은 1000 단위
+    static string Gb(string bytes)
+    {
+        if (long.TryParse(bytes, out long n) == false)
+        {
+            return "알 수 없음";
+        }
+        return $"{n / 1000_000_000L} GB";
+    }
+}
+
 // ───────────────────────── 백업 ─────────────────────────
 
 static class Backup
@@ -448,7 +542,8 @@ static class Native
         SystemParametersInfo(SPI_SETMOUSE, 0, mouse, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
     }
 
-    public static (int Code, string Output) Run(string file, string args)
+    // encoding = null이면 시스템 기본 코드페이지 (bcdedit/powercfg 한글 출력은 이걸로 읽어야 함)
+    public static (int Code, string Output) Run(string file, string args, System.Text.Encoding? encoding = null)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -457,6 +552,11 @@ static class Native
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        if (encoding != null)
+        {
+            psi.StandardOutputEncoding = encoding;
+            psi.StandardErrorEncoding = encoding;
+        }
         using var p = Process.Start(psi)!;
         string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
         p.WaitForExit();
@@ -1024,6 +1124,7 @@ class MainForm : Form
         buttons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4) };
         AddButton("복원 지점 만들기", async (_, _) => await CreateRestorePoint());
         AddButton("★ 자동 최적화", async (_, _) => await AutoOptimize());
+        AddButton("PC 사양", async (_, _) => await ShowSpecs());
         AddButton("안전 항목 전체 선택", (_, _) => SetAllChecked(true));
         AddButton("선택 해제", (_, _) => SetAllChecked(false));
         AddButton("선택 적용", (_, _) => Run(true));
@@ -1038,6 +1139,20 @@ class MainForm : Form
         RefreshList();
         Log($"백업 파일: {Backup.FilePath}");
         Shown += async (_, _) => await CheckUpdate(true);
+    }
+
+    async Task ShowSpecs()
+    {
+        Log("PC 사양 조회 중...");
+        UseWaitCursor = true;
+        string specs = await Task.Run(Specs.Query);
+        UseWaitCursor = false;
+        foreach (string line in specs.Split('\n'))
+        {
+            Log(line.TrimEnd());
+        }
+        // 메시지 창에서 Ctrl+C로 전체 복사 가능
+        MessageBox.Show(this, specs, "PC 사양", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // silent = 시작 시 자동 확인: 새 버전 없음/네트워크 오류는 로그만 남기고 조용히 넘어감

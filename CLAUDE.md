@@ -17,6 +17,7 @@
 | 이미 적용된 설정 자동 체크 (사용자가 직접 바꿔 둔 설정 포함) | 구현 완료 |
 | ★ 자동 최적화 (PC 환경 감지 → 추천 항목 선택 → 확인 후 적용) | 구현 완료 |
 | 앱 내 업데이트 (GitHub Release 조회 → EXE 자기 교체) | 구현 완료 |
+| PC 사양 보기 (CPU/GPU/RAM/메인보드/Windows/디스크) | 구현 완료 — 조회 스크립트는 실기 확인, 앱 화면은 미확인 |
 | GitHub 저장소 생성 | 완료 — `RimGa9703/project_GameTuner` |
 | 첫 푸시 / Release 생성 확인 | 완료 — 공개 저장소, Actions 성공, Release `v1.0.1` (2026-11-21) |
 | `Updater.Repo` 상수 | 완료 — `RimGa9703/project_GameTuner` |
@@ -54,9 +55,10 @@ GameTuner/
 | `Tweak` | 최적화 항목 하나: Title, Desc, NeedsReboot, Aggressive, Risk, AutoSkip, IsApplied, Apply, Revert |
 | `Updater` | GitHub Release 조회, 다운로드, 자기 교체, `.old` 정리 |
 | `SysEnv` | PC 환경 감지 (노트북/충전 여부, Win10/11·빌드, SSD/HDD, BitLocker, 커널 안티치트) |
+| `Specs` | PC 사양 조회 (PowerShell CIM, UTF-8 출력 → `key=값|값` 파싱). GPU 메모리는 표시 안 함 (`ponytail:` 참고) |
 | `Backup` | `C:\ProgramData\GameTuner\backup.json` 읽기/쓰기 |
 | `Reg` | `Write`(처음 한 번만 백업 후 쓰기) / `Restore` / `Matches` / `ReadInt` |
-| `Native` | `SystemParametersInfo`(마우스 즉시 반영), 외부 프로세스 실행 `Run` |
+| `Native` | `SystemParametersInfo`(마우스 즉시 반영), 외부 프로세스 실행 `Run` (encoding 생략 = 시스템 코드페이지, bcdedit/powercfg용) |
 | `Power` | 고성능 전원 플랜 적용/되돌리기, `ActiveScheme()` |
 | `PowerSetting` | 현재 전원 플랜의 개별 설정 (AC/DC) 변경 — 코어 파킹 |
 | `Boot` | bcdedit yes/no 옵션 — 다이나믹 틱 |
