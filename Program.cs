@@ -1092,6 +1092,11 @@ class MainForm : Form
         Text = $"GameTuner v{Updater.Current} - 게임용 윈도우 최적화";
         Size = new Size(1000, 640);
         StartPosition = FormStartPosition.CenterScreen;
+        // EXE에 박힌 app.ico를 창 제목줄/작업 표시줄에도 사용
+        if (Environment.ProcessPath != null)
+        {
+            Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath);
+        }
 
         list = new ListView
         {
