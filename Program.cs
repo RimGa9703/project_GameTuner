@@ -1281,7 +1281,7 @@ class MainForm : Form
         }
     }
 
-    // 현재 시스템 상태 기준으로 다시 그림 — 이미 적용된 항목(직접 설정한 것 포함)은 체크됨
+    // 체크박스는 이번에 실행할 항목 선택, 상태 열은 실제 시스템 적용 상태를 표시
     void RefreshList()
     {
         list.BeginUpdate();
@@ -1330,7 +1330,7 @@ class MainForm : Form
             }
 
             var item = new ListViewItem(new[] { t.Title, kind, status, reboot, t.Desc });
-            item.Checked = applied;
+            item.Checked = false;
             if (t.Aggressive == true)
             {
                 item.ForeColor = Color.Firebrick;
