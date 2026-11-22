@@ -646,22 +646,36 @@ static class Power
 // 현재 전원 플랜의 개별 설정값 (AC/DC) 변경
 static class PowerSetting
 {
-    static (int Ac, int Dc)? Query(string scheme, string sub, string setting)
+    readonly record struct SettingInfo(int Minimum, int Maximum, int Ac, int Dc);
+    readonly record struct SavedSetting(string Guid, int Ac, int Dc);
+
+    const string CoreParkingGroup = "54533251-82be-4824-96c1-47b60b740d00";
+    const int CoreParkingValue = 100;
+    static readonly (string Guid, string Name)[] CoreParkingSettings =
     {
-        // /qh = 숨김 설정 포함. 출력 마지막 두 16진수가 현재 AC/DC 값 (언어 무관)
+        ("0cc5b647-c1df-4637-891a-dec35c318583", "CPMINCORES"),
+        ("0cc5b647-c1df-4637-891a-dec35c318584", "CPMINCORES1"),
+    };
+
+    static SettingInfo? Query(string scheme, string sub, string setting)
+    {
+        // /qh 출력 끝의 다섯 16진수는 최소/최대/증가폭/현재 AC/DC 값이다.
         var result = Native.Run("powercfg", $"/qh {scheme} {sub} {setting}");
         if (result.Code != 0)
         {
-            throw new InvalidOperationException($"전원 설정을 읽지 못했습니다: {result.Output.Trim()}");
+            return null;
         }
         var matches = Regex.Matches(result.Output, @"0x[0-9a-fA-F]{8}");
-        if (matches.Count < 2)
+        if (matches.Count < 5)
         {
             return null;
         }
-        int ac = Convert.ToInt32(matches[matches.Count - 2].Value, 16);
-        int dc = Convert.ToInt32(matches[matches.Count - 1].Value, 16);
-        return (ac, dc);
+        int start = matches.Count - 5;
+        int min = Convert.ToInt32(matches[start].Value, 16);
+        int max = Convert.ToInt32(matches[start + 1].Value, 16);
+        int ac = Convert.ToInt32(matches[start + 3].Value, 16);
+        int dc = Convert.ToInt32(matches[start + 4].Value, 16);
+        return new SettingInfo(min, max, ac, dc);
     }
 
     static void Set(string scheme, string sub, string setting, int ac, int dc)
@@ -673,7 +687,15 @@ static class PowerSetting
         var actual = Query(scheme, sub, setting);
         if (actual == null || actual.Value.Ac != ac || actual.Value.Dc != dc)
         {
-            string current = actual == null ? "읽을 수 없음" : $"AC={actual.Value.Ac}, DC={actual.Value.Dc}";
+            string current;
+            if (actual == null)
+            {
+                current = "읽을 수 없음";
+            }
+            else
+            {
+                current = $"AC={actual.Value.Ac}, DC={actual.Value.Dc}";
+            }
             throw new InvalidOperationException($"전원 설정값을 적용하지 못했습니다. 요청값 AC={ac}, DC={dc}; 현재값 {current}");
         }
     }
@@ -687,9 +709,23 @@ static class PowerSetting
         }
     }
 
-    public static Tweak Make(string title, string desc, string risk, string sub, string setting, int value)
+    static List<(string Guid, SettingInfo Current)> SupportedCoreParkingSettings(string scheme)
     {
-        string key = $"powersetting:{setting}";
+        var supported = new List<(string Guid, SettingInfo Current)>();
+        foreach (var setting in CoreParkingSettings)
+        {
+            var current = Query(scheme, CoreParkingGroup, setting.Guid);
+            if (current != null && current.Value.Minimum <= CoreParkingValue && current.Value.Maximum >= CoreParkingValue)
+            {
+                supported.Add((setting.Guid, current.Value));
+            }
+        }
+        return supported;
+    }
+
+    public static Tweak MakeCoreParking(string title, string desc, string risk)
+    {
+        const string key = "powersetting:coreparking";
         return new Tweak
         {
             Title = title,
@@ -703,8 +739,8 @@ static class PowerSetting
                 {
                     return false;
                 }
-                var cur = Query(scheme, sub, setting);
-                return cur != null && cur.Value.Ac == value && cur.Value.Dc == value;
+                var supported = SupportedCoreParkingSettings(scheme);
+                return supported.Count > 0 && supported.All(x => x.Current.Ac == CoreParkingValue && x.Current.Dc == CoreParkingValue);
             },
             Apply = () =>
             {
@@ -713,17 +749,20 @@ static class PowerSetting
                 {
                     throw new InvalidOperationException("현재 전원 플랜을 확인할 수 없습니다.");
                 }
+                var supported = SupportedCoreParkingSettings(scheme);
+                if (supported.Count == 0)
+                {
+                    throw new InvalidOperationException("현재 전원 플랜에서 100% 설정이 허용되는 코어 파킹 항목을 찾지 못했습니다.");
+                }
                 if (Backup.Has(key) == false)
                 {
-                    var cur = Query(scheme, sub, setting);
-                    if (cur == null)
-                    {
-                        throw new InvalidOperationException("현재 설정값을 읽을 수 없습니다.");
-                    }
-                    // Kind 필드에 플랜 GUID 저장 → 되돌릴 때 같은 플랜에 복원
-                    Backup.Set(key, new BackupEntry { Existed = true, Kind = scheme, Data = $"{cur.Value.Ac},{cur.Value.Dc}" });
+                    var saved = supported.Select(x => new SavedSetting(x.Guid, x.Current.Ac, x.Current.Dc)).ToList();
+                    Backup.Set(key, new BackupEntry { Existed = true, Kind = scheme, Data = JsonSerializer.Serialize(saved) });
                 }
-                Set(scheme, sub, setting, value, value);
+                foreach (var setting in supported)
+                {
+                    Set(scheme, CoreParkingGroup, setting.Guid, CoreParkingValue, CoreParkingValue);
+                }
             },
             Revert = () =>
             {
@@ -732,8 +771,15 @@ static class PowerSetting
                 {
                     return;
                 }
-                string[] parts = entry.Data.Split(',');
-                Set(entry.Kind, sub, setting, int.Parse(parts[0]), int.Parse(parts[1]));
+                var saved = JsonSerializer.Deserialize<List<SavedSetting>>(entry.Data);
+                if (saved == null)
+                {
+                    throw new InvalidOperationException("코어 파킹 백업 데이터를 읽을 수 없습니다.");
+                }
+                foreach (var setting in saved)
+                {
+                    Set(entry.Kind, CoreParkingGroup, setting.Guid, setting.Ac, setting.Dc);
+                }
                 string? active = Power.ActiveScheme();
                 if (active != null)
                 {
@@ -960,10 +1006,9 @@ static class Tweaks
 
             // ───── 공격적 옵션 ─────
 
-            PowerSetting.Make("코어 파킹 해제",
-                "모든 CPU 코어를 항상 깨워 둠 → 코어 기상 지연으로 인한 스터터 감소",
-                "• 유휴 전력·발열 증가, 노트북 배터리 수명 단축\n• 팬 소음 증가\n• 현재 전원 플랜에만 적용됨 (전원 플랜을 바꾸면 다시 적용 필요)",
-                "54533251-82be-4824-96c1-47b60b740d00", "0cc5b647-c1df-4637-891a-dec35c318583", 100),
+            PowerSetting.MakeCoreParking("코어 파킹 해제",
+                "Windows에서 100% 설정을 허용하는 CPU 코어 파킹 등급에 적용",
+                "• 유휴 전력·발열 증가, 노트북 배터리 수명 단축\n• 팬 소음 증가\n• 현재 전원 플랜에만 적용됨 (전원 플랜을 바꾸면 다시 적용 필요)"),
 
             Aggressive(RegTweak("전원 스로틀링 끄기", "백그라운드 프로세스 CPU 절전(EcoQoS) 비활성화", true, () => new List<RegVal>
             {
