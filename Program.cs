@@ -649,7 +649,12 @@ static class PowerSetting
     static (int Ac, int Dc)? Query(string scheme, string sub, string setting)
     {
         // /qh = 숨김 설정 포함. 출력 마지막 두 16진수가 현재 AC/DC 값 (언어 무관)
-        var matches = Regex.Matches(Native.Run("powercfg", $"/qh {scheme} {sub} {setting}").Output, @"0x[0-9a-fA-F]{8}");
+        var result = Native.Run("powercfg", $"/qh {scheme} {sub} {setting}");
+        if (result.Code != 0)
+        {
+            throw new InvalidOperationException($"전원 설정을 읽지 못했습니다: {result.Output.Trim()}");
+        }
+        var matches = Regex.Matches(result.Output, @"0x[0-9a-fA-F]{8}");
         if (matches.Count < 2)
         {
             return null;
@@ -661,9 +666,25 @@ static class PowerSetting
 
     static void Set(string scheme, string sub, string setting, int ac, int dc)
     {
-        Native.Run("powercfg", $"/setacvalueindex {scheme} {sub} {setting} {ac}");
-        Native.Run("powercfg", $"/setdcvalueindex {scheme} {sub} {setting} {dc}");
-        Native.Run("powercfg", $"/setactive {scheme}");
+        RunChecked($"/setacvalueindex {scheme} {sub} {setting} {ac}");
+        RunChecked($"/setdcvalueindex {scheme} {sub} {setting} {dc}");
+        RunChecked($"/setactive {scheme}");
+
+        var actual = Query(scheme, sub, setting);
+        if (actual == null || actual.Value.Ac != ac || actual.Value.Dc != dc)
+        {
+            string current = actual == null ? "읽을 수 없음" : $"AC={actual.Value.Ac}, DC={actual.Value.Dc}";
+            throw new InvalidOperationException($"전원 설정값을 적용하지 못했습니다. 요청값 AC={ac}, DC={dc}; 현재값 {current}");
+        }
+    }
+
+    static void RunChecked(string args)
+    {
+        var result = Native.Run("powercfg", args);
+        if (result.Code != 0)
+        {
+            throw new InvalidOperationException($"powercfg {args} 실패 (종료 코드 {result.Code}): {result.Output.Trim()}");
+        }
     }
 
     public static Tweak Make(string title, string desc, string risk, string sub, string setting, int value)
