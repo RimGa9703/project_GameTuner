@@ -18,6 +18,7 @@
 | ★ 자동 최적화 (PC 환경 감지 → 추천 항목 선택 → 확인 후 적용) | 구현 완료 |
 | 앱 내 업데이트 (GitHub Release 조회 → EXE 자기 교체) | 구현 완료 |
 | PC 사양 보기 (CPU/GPU/RAM/메인보드/Windows/디스크) | 구현 완료 — 조회 스크립트는 실기 확인, 앱 화면은 미확인 |
+| 임시 파일 정리 (사용자/Windows 임시, 업데이트 캐시, GPU 셰이더 캐시) | 구현 완료 — 크기 측정만 실기 확인, 실제 삭제·선택 창은 미확인 |
 | GitHub 저장소 생성 | 완료 — `RimGa9703/project_GameTuner` |
 | 첫 푸시 / Release 생성 확인 | 완료 — 공개 저장소, Actions 성공, Release `v1.0.1` (2026-11-21) |
 | `Updater.Repo` 상수 | 완료 — `RimGa9703/project_GameTuner` |
@@ -56,6 +57,7 @@ GameTuner/
 | `Updater` | GitHub Release 조회, 다운로드, 자기 교체, `.old` 정리 |
 | `SysEnv` | PC 환경 감지 (노트북/충전 여부, Win10/11·빌드, SSD/HDD, BitLocker, 커널 안티치트) |
 | `Specs` | PC 사양 조회 (PowerShell CIM, UTF-8 출력 → `key=값|값` 파싱). GPU 메모리는 표시 안 함 (`ponytail:` 참고) |
+| `CleanTarget` / `Cleaner` | 임시 파일 정리 대상 정의, 크기 측정 `Measure`, 삭제 `Clean`. 정션은 따라가지 않고, `%TEMP%\.net`(단일 파일 런타임)은 제외. 임시 폴더는 7일 지난 파일만 |
 | `Backup` | `C:\ProgramData\GameTuner\backup.json` 읽기/쓰기 |
 | `Reg` | `Write`(처음 한 번만 백업 후 쓰기) / `Restore` / `Matches` / `ReadInt` |
 | `Native` | `SystemParametersInfo`(마우스 즉시 반영), 외부 프로세스 실행 `Run` (encoding 생략 = 시스템 코드페이지, bcdedit/powercfg용) |
@@ -78,6 +80,7 @@ GameTuner/
 7. **공격적 항목을 처음 적용할 때는 위험 내용을 모은 확인창을 띄운다.** 기본 선택은 "아니요"이다. 자동 최적화는 자체 요약 창에 위험 내용을 넣고 `Run(true, skipConfirm: true)`로 넘어간다.
 8. **서비스가 없는 PC에서는 레지스트리 키를 만들지 않는다.** `ServiceTweak`은 빈 목록을 반환하고, `RegTweak.Apply`는 빈 목록이면 예외를 던진다. `CreateSubKey`가 가짜 서비스 키를 만드는 걸 막기 위해서다.
 9. **보안을 약화시키는 항목(HVCI)은 자동 최적화가 켜지 않는다.** Defender나 Windows Update를 끄는 기능은 의도적으로 넣지 않았다.
+10. **임시 파일 정리는 되돌릴 수 없다.** 백업 대상이 아니므로 선택 창에서 크기와 "되돌릴 수 없음"을 먼저 보여 주고, 셰이더 캐시는 기본 해제 상태로 둔다. 휴지통·사용자 문서 폴더는 대상에 넣지 않는다.
 
 ---
 

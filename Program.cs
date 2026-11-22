@@ -372,6 +372,201 @@ static class Specs
     }
 }
 
+// ───────────────────────── 임시 파일 정리 ─────────────────────────
+
+class CleanTarget
+{
+    public string Title = "";
+    public string Note = "";
+    public string[] Paths = Array.Empty<string>();
+    public bool DefaultOn;
+    public TimeSpan MinAge = TimeSpan.Zero;   // 이보다 최근에 바뀐 파일은 사용 중일 수 있어 남김
+}
+
+static class Cleaner
+{
+    // 정션/심볼릭 링크는 따라가지 않음 → 정리 대상 밖의 파일을 지우지 않게
+    static readonly EnumerationOptions Opts = new EnumerationOptions
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        AttributesToSkip = FileAttributes.ReparsePoint,
+    };
+
+    public static List<CleanTarget> Targets()
+    {
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        return new List<CleanTarget>
+        {
+            new CleanTarget
+            {
+                Title = "사용자 임시 파일",
+                Note = "7일 지난 파일만 지움 (Windows 디스크 정리와 같은 기준)",
+                Paths = new[] { System.IO.Path.GetTempPath() },
+                DefaultOn = true,
+                MinAge = TimeSpan.FromDays(7),
+            },
+            new CleanTarget
+            {
+                Title = "Windows 임시 파일",
+                Note = "7일 지난 파일만 지움 (Windows 디스크 정리와 같은 기준)",
+                Paths = new[] { System.IO.Path.Combine(windows, "Temp") },
+                DefaultOn = true,
+                MinAge = TimeSpan.FromDays(7),
+            },
+            new CleanTarget
+            {
+                Title = "Windows 업데이트 다운로드 캐시",
+                Note = "설치가 끝난 업데이트 파일. 설치 대기 중인 업데이트는 다시 받을 수 있음",
+                Paths = new[] { System.IO.Path.Combine(windows, "SoftwareDistribution", "Download") },
+                DefaultOn = true,
+            },
+            new CleanTarget
+            {
+                Title = "GPU 셰이더 캐시 (DirectX / NVIDIA / AMD)",
+                Note = "지운 뒤 첫 게임 실행 때 잠깐 끊김. 드라이버 업데이트 후 그래픽 문제가 있을 때만 권장",
+                Paths = new[]
+                {
+                    System.IO.Path.Combine(local, "D3DSCache"),
+                    System.IO.Path.Combine(local, "NVIDIA", "DXCache"),
+                    System.IO.Path.Combine(local, "NVIDIA", "GLCache"),
+                    System.IO.Path.Combine(local, "AMD", "DxCache"),
+                    System.IO.Path.Combine(local, "AMD", "GLCache"),
+                },
+                DefaultOn = false,
+            },
+        };
+    }
+
+    // 단일 파일 EXE가 풀어 둔 런타임 폴더(%TEMP%\.net)는 지우면 다음 실행이 깨질 수 있어 제외
+    static bool Excluded(string path)
+    {
+        string dotnet = System.IO.Path.Combine(System.IO.Path.GetTempPath(), ".net") + System.IO.Path.DirectorySeparatorChar;
+        return path.StartsWith(dotnet, StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    static List<FileInfo> Files(CleanTarget t)
+    {
+        var result = new List<FileInfo>();
+        DateTime cutoff = DateTime.UtcNow - t.MinAge;
+        foreach (string root in t.Paths)
+        {
+            if (Directory.Exists(root) == false)
+            {
+                continue;
+            }
+            try
+            {
+                foreach (var f in new DirectoryInfo(root).EnumerateFiles("*", Opts))
+                {
+                    if (Excluded(f.FullName) == true || f.LastWriteTimeUtc > cutoff)
+                    {
+                        continue;
+                    }
+                    result.Add(f);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+        return result;
+    }
+
+    public static (long Bytes, int Count) Measure(CleanTarget t)
+    {
+        var files = Files(t);
+        return (files.Sum(f => f.Length), files.Count);
+    }
+
+    // 사용 중인 파일은 건너뜀. 휴지통을 거치지 않으므로 되돌릴 수 없음
+    public static (long Freed, int Deleted, int Skipped) Clean(CleanTarget t)
+    {
+        long freed = 0;
+        int deleted = 0;
+        int skipped = 0;
+        foreach (var f in Files(t))
+        {
+            try
+            {
+                long size = f.Length;
+                if (f.IsReadOnly == true)
+                {
+                    f.IsReadOnly = false;
+                }
+                f.Delete();
+                freed += size;
+                deleted++;
+            }
+            catch (IOException)
+            {
+                skipped++;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                skipped++;
+            }
+        }
+
+        // 비게 된 하위 폴더 정리 (깊은 폴더부터, 정리 대상 폴더 자체는 남김)
+        DateTime cutoff = DateTime.UtcNow - t.MinAge;
+        foreach (string root in t.Paths)
+        {
+            if (Directory.Exists(root) == false)
+            {
+                continue;
+            }
+            List<string> dirs;
+            try
+            {
+                dirs = Directory.EnumerateDirectories(root, "*", Opts).OrderByDescending(d => d.Length).ToList();
+            }
+            catch (IOException)
+            {
+                continue;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                continue;
+            }
+            foreach (string d in dirs)
+            {
+                try
+                {
+                    if (Excluded(d + System.IO.Path.DirectorySeparatorChar) == true || Directory.GetLastWriteTimeUtc(d) > cutoff)
+                    {
+                        continue;
+                    }
+                    if (Directory.EnumerateFileSystemEntries(d).Any() == false)
+                    {
+                        Directory.Delete(d);
+                    }
+                }
+                catch (IOException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+        return (freed, deleted, skipped);
+    }
+
+    public static string FormatSize(long bytes)
+    {
+        if (bytes >= 1024L * 1024 * 1024)
+        {
+            return $"{bytes / (1024.0 * 1024 * 1024):0.00} GB";
+        }
+        return $"{bytes / (1024.0 * 1024):0.0} MB";
+    }
+}
+
 // ───────────────────────── 백업 ─────────────────────────
 
 static class Backup
@@ -1218,6 +1413,7 @@ class MainForm : Form
         buttons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4) };
         AddButton("복원 지점 만들기", async (_, _) => await CreateRestorePoint());
         AddButton("★ 자동 최적화", async (_, _) => await AutoOptimize());
+        AddButton("임시 파일 정리", async (_, _) => await CleanTemp());
         AddButton("새로고침", (_, _) => RefreshList());
         AddButton("업데이트 확인", async (_, _) => await CheckUpdate(false));
 
@@ -1282,6 +1478,74 @@ class MainForm : Form
             tip.Hide(view);
         };
         return view;
+    }
+
+    // 크기 확인 → 항목 선택 창 → 정리. 설정 변경이 아니라 백업/되돌리기 대상이 아님
+    async Task CleanTemp()
+    {
+        Log("임시 파일 크기 확인 중...");
+        UseWaitCursor = true;
+        var targets = Cleaner.Targets();
+        var sizes = await Task.Run(() => targets.Select(Cleaner.Measure).ToList());
+        UseWaitCursor = false;
+
+        using var dlg = new Form
+        {
+            Text = "임시 파일 정리",
+            Size = new Size(600, 340),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false,
+            MaximizeBox = false,
+        };
+        var box = new CheckedListBox { Dock = DockStyle.Fill, CheckOnClick = true };
+        var notes = new System.Text.StringBuilder();
+        for (int i = 0; i < targets.Count; i++)
+        {
+            box.Items.Add($"{targets[i].Title} — {Cleaner.FormatSize(sizes[i].Bytes)} (파일 {sizes[i].Count}개)", targets[i].DefaultOn);
+            notes.AppendLine($"• {targets[i].Title}: {targets[i].Note}");
+        }
+        notes.AppendLine("※ 지운 파일은 휴지통을 거치지 않아 되돌릴 수 없습니다. 사용 중인 파일은 건너뜁니다.");
+        var note = new Label { Dock = DockStyle.Bottom, Height = 110, Text = notes.ToString(), Padding = new Padding(6) };
+        var panel = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 40, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(4) };
+        var cancel = new Button { Text = "취소", DialogResult = DialogResult.Cancel, AutoSize = true };
+        var ok = new Button { Text = "정리", DialogResult = DialogResult.OK, AutoSize = true };
+        panel.Controls.Add(cancel);
+        panel.Controls.Add(ok);
+        dlg.Controls.Add(box);
+        dlg.Controls.Add(note);
+        dlg.Controls.Add(panel);
+        dlg.AcceptButton = ok;
+        dlg.CancelButton = cancel;
+
+        if (dlg.ShowDialog(this) != DialogResult.OK)
+        {
+            Log("임시 파일 정리를 취소했습니다.");
+            return;
+        }
+        var picked = box.CheckedIndices.Cast<int>().Select(i => targets[i]).ToList();
+        if (picked.Count == 0)
+        {
+            Log("선택된 항목이 없습니다.");
+            return;
+        }
+
+        UseWaitCursor = true;
+        long total = 0;
+        foreach (var t in picked)
+        {
+            var r = await Task.Run(() => Cleaner.Clean(t));
+            total += r.Freed;
+            string skipped = "";
+            if (r.Skipped > 0)
+            {
+                skipped = $", 사용 중이라 건너뜀 {r.Skipped}개";
+            }
+            Log($"[정리] {t.Title}: {Cleaner.FormatSize(r.Freed)} 확보 (파일 {r.Deleted}개 삭제{skipped})");
+        }
+        UseWaitCursor = false;
+        Log($"임시 파일 정리 완료: 총 {Cleaner.FormatSize(total)} 확보");
+        MessageBox.Show(this, $"총 {Cleaner.FormatSize(total)}를 확보했습니다.", "임시 파일 정리", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     async Task ShowSpecs()
