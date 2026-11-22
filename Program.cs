@@ -1147,11 +1147,19 @@ static class Tweaks
 class MainForm : Form
 {
     readonly List<Tweak> tweaks = Tweaks.All();
-    readonly ListView list;
+    readonly ListView unappliedList;
+    readonly ListView appliedList;
     readonly TextBox log;
     readonly FlowLayoutPanel buttons;
+    readonly SplitContainer optionSplit;
+    readonly GroupBox unappliedGroup;
+    readonly GroupBox appliedGroup;
+    readonly TabControl tabs;
+    readonly TabPage specsTab;
+    readonly TextBox specsText;
     readonly ToolTip tip = new ToolTip { AutoPopDelay = 30000, InitialDelay = 300, ReshowDelay = 100 };
     ListViewItem? hoverItem;
+    bool refreshingLists;
 
     public MainForm()
     {
@@ -1164,23 +1172,38 @@ class MainForm : Form
             Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath);
         }
 
-        list = new ListView
+        unappliedList = CreateOptionsList();
+        appliedList = CreateOptionsList();
+        unappliedList.ItemCheck += OnItemCheck;
+        appliedList.ItemCheck += OnItemCheck;
+
+        unappliedGroup = new GroupBox { Text = "미적용 옵션", Dock = DockStyle.Fill, Padding = new Padding(8) };
+        unappliedGroup.Controls.Add(unappliedList);
+        appliedGroup = new GroupBox { Text = "적용 옵션", Dock = DockStyle.Fill, Padding = new Padding(8) };
+        appliedGroup.Controls.Add(appliedList);
+
+        optionSplit = new SplitContainer
         {
-            View = View.Details,
-            CheckBoxes = true,
-            FullRowSelect = true,
             Dock = DockStyle.Fill,
+            Size = new Size(980, 440),
+            Orientation = Orientation.Horizontal,
+            SplitterDistance = 210,
+            Panel1MinSize = 100,
+            Panel2MinSize = 100,
         };
-        list.Columns.Add("항목", 260);
-        list.Columns.Add("구분", 70);
-        list.Columns.Add("상태", 80);
-        list.Columns.Add("재부팅", 60);
-        list.Columns.Add("설명", 480);
-        list.MouseMove += OnListMouseMove;
-        list.MouseLeave += (_, _) =>
+        optionSplit.Panel1.Controls.Add(unappliedGroup);
+        optionSplit.Panel2.Controls.Add(appliedGroup);
+        optionSplit.SizeChanged += (_, _) =>
         {
-            hoverItem = null;
-            tip.Hide(list);
+            int availableHeight = optionSplit.Height - optionSplit.SplitterWidth - optionSplit.Panel1MinSize - optionSplit.Panel2MinSize;
+            if (availableHeight >= 0)
+            {
+                int half = optionSplit.Panel1MinSize + availableHeight / 2;
+                if (optionSplit.SplitterDistance != half)
+                {
+                    optionSplit.SplitterDistance = half;
+                }
+            }
         };
 
         log = new TextBox
@@ -1195,36 +1218,100 @@ class MainForm : Form
         buttons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4) };
         AddButton("복원 지점 만들기", async (_, _) => await CreateRestorePoint());
         AddButton("★ 자동 최적화", async (_, _) => await AutoOptimize());
-        AddButton("PC 사양", async (_, _) => await ShowSpecs());
-        AddButton("안전 항목 전체 선택", (_, _) => SetAllChecked(true));
-        AddButton("선택 해제", (_, _) => SetAllChecked(false));
-        AddButton("선택 적용", (_, _) => Run(true));
-        AddButton("선택 되돌리기", (_, _) => Run(false));
         AddButton("새로고침", (_, _) => RefreshList());
         AddButton("업데이트 확인", async (_, _) => await CheckUpdate(false));
 
-        Controls.Add(list);
-        Controls.Add(log);
-        Controls.Add(buttons);
+        specsText = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Dock = DockStyle.Fill,
+            Font = new Font("Consolas", 10),
+            Padding = new Padding(12),
+        };
+        specsTab = new TabPage("PC 사양");
+        var specsButtons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4) };
+        var refreshSpecsButton = new Button { Text = "사양 새로고침", AutoSize = true };
+        refreshSpecsButton.Click += async (_, _) => await ShowSpecs();
+        specsButtons.Controls.Add(refreshSpecsButton);
+        specsTab.Controls.Add(specsText);
+        specsTab.Controls.Add(specsButtons);
+
+        var optionsTab = new TabPage("최적화");
+        optionsTab.Controls.Add(optionSplit);
+        optionsTab.Controls.Add(log);
+        optionsTab.Controls.Add(buttons);
+
+        tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(optionsTab);
+        tabs.TabPages.Add(specsTab);
+        tabs.SelectedIndexChanged += async (_, _) =>
+        {
+            if (tabs.SelectedTab == specsTab)
+            {
+                await ShowSpecs();
+            }
+        };
+        Controls.Add(tabs);
 
         RefreshList();
         Log($"백업 파일: {Backup.FilePath}");
         Shown += async (_, _) => await CheckUpdate(true);
     }
 
+    ListView CreateOptionsList()
+    {
+        var view = new ListView
+        {
+            View = View.Details,
+            CheckBoxes = true,
+            FullRowSelect = true,
+            Dock = DockStyle.Fill,
+        };
+        view.Columns.Add("항목", 245);
+        view.Columns.Add("구분", 65);
+        view.Columns.Add("상태", 80);
+        view.Columns.Add("재부팅", 60);
+        view.Columns.Add("설명", 480);
+        view.MouseMove += OnListMouseMove;
+        view.MouseLeave += (_, _) =>
+        {
+            hoverItem = null;
+            tip.Hide(view);
+        };
+        return view;
+    }
+
     async Task ShowSpecs()
     {
+        if (loadingSpecs == true)
+        {
+            return;
+        }
+        loadingSpecs = true;
         Log("PC 사양 조회 중...");
         UseWaitCursor = true;
-        string specs = await Task.Run(Specs.Query);
-        UseWaitCursor = false;
-        foreach (string line in specs.Split('\n'))
+        try
         {
-            Log(line.TrimEnd());
+            string specs = await Task.Run(Specs.Query);
+            specsText.Text = specs;
+            Log("PC 사양 조회 완료.");
         }
-        // 메시지 창에서 Ctrl+C로 전체 복사 가능
-        MessageBox.Show(this, specs, "PC 사양", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        catch (Exception ex)
+        {
+            specsText.Text = $"PC 사양을 읽지 못했습니다.{Environment.NewLine}{ex.Message}";
+            Log($"PC 사양 조회 실패: {ex.Message}");
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            loadingSpecs = false;
+        }
     }
+
+    bool loadingSpecs;
 
     // silent = 시작 시 자동 확인: 새 버전 없음/네트워크 오류는 로그만 남기고 조용히 넘어감
     async Task CheckUpdate(bool silent)
@@ -1284,22 +1371,13 @@ class MainForm : Form
         buttons.Controls.Add(b);
     }
 
-    // 전체 선택은 안전 항목만 — 공격적 옵션은 하나씩 직접 체크하도록
-    void SetAllChecked(bool value)
-    {
-        foreach (ListViewItem item in list.Items)
-        {
-            if (value == true && tweaks[item.Index].Aggressive == true)
-            {
-                continue;
-            }
-            item.Checked = value;
-        }
-    }
-
     void OnListMouseMove(object? sender, MouseEventArgs e)
     {
-        var item = list.GetItemAt(e.X, e.Y);
+        if (sender is not ListView view)
+        {
+            return;
+        }
+        var item = view.GetItemAt(e.X, e.Y);
         if (item == hoverItem)
         {
             return;
@@ -1307,33 +1385,37 @@ class MainForm : Form
         hoverItem = item;
         if (item == null)
         {
-            tip.Hide(list);
+            tip.Hide(view);
             return;
         }
 
-        var t = tweaks[item.Index];
+        if (item.Tag is not Tweak t)
+        {
+            return;
+        }
         if (t.Aggressive == true)
         {
             tip.ToolTipIcon = ToolTipIcon.Warning;
             tip.ToolTipTitle = $"⚠ {t.Title} — 발생할 수 있는 문제";
-            tip.Show(t.Risk, list, e.X + 16, e.Y + 16, tip.AutoPopDelay);
+            tip.Show(t.Risk, view, e.X + 16, e.Y + 16, tip.AutoPopDelay);
         }
         else
         {
             tip.ToolTipIcon = ToolTipIcon.Info;
             tip.ToolTipTitle = t.Title;
-            tip.Show(t.Desc, list, e.X + 16, e.Y + 16, tip.AutoPopDelay);
+            tip.Show(t.Desc, view, e.X + 16, e.Y + 16, tip.AutoPopDelay);
         }
     }
 
-    // 체크박스는 이번에 실행할 항목 선택, 상태 열은 실제 시스템 적용 상태를 표시
     void RefreshList()
     {
-        list.BeginUpdate();
-        list.Items.Clear();
-        for (int i = 0; i < tweaks.Count; i++)
+        refreshingLists = true;
+        unappliedList.BeginUpdate();
+        appliedList.BeginUpdate();
+        unappliedList.Items.Clear();
+        appliedList.Items.Clear();
+        foreach (var t in tweaks)
         {
-            var t = tweaks[i];
             string status;
             bool applied = false;
             try
@@ -1374,104 +1456,127 @@ class MainForm : Form
                 kind = "안전";
             }
 
-            var item = new ListViewItem(new[] { t.Title, kind, status, reboot, t.Desc });
-            item.Checked = false;
+            var item = new ListViewItem(new[] { t.Title, kind, status, reboot, t.Desc }) { Tag = t };
+            item.Checked = applied;
             if (t.Aggressive == true)
             {
                 item.ForeColor = Color.Firebrick;
             }
-            list.Items.Add(item);
+            if (applied == true)
+            {
+                appliedList.Items.Add(item);
+            }
+            else
+            {
+                unappliedList.Items.Add(item);
+            }
         }
-        list.EndUpdate();
+        unappliedGroup.Text = $"미적용 옵션 ({unappliedList.Items.Count})";
+        appliedGroup.Text = $"적용 옵션 ({appliedList.Items.Count})";
+        unappliedList.EndUpdate();
+        appliedList.EndUpdate();
+        refreshingLists = false;
     }
 
-    void Run(bool apply, bool skipConfirm = false)
+    void OnItemCheck(object? sender, ItemCheckEventArgs e)
     {
-        if (list.CheckedItems.Count == 0)
+        if (refreshingLists == true || operationInProgress == true || sender is not ListView view)
         {
-            Log("선택된 항목이 없습니다.");
+            return;
+        }
+        if (e.Index < 0 || e.Index >= view.Items.Count || view.Items[e.Index].Tag is not Tweak tweak)
+        {
             return;
         }
 
-        if (apply == true && skipConfirm == false && ConfirmAggressive() == false)
+        bool apply = e.NewValue == CheckState.Checked;
+        e.NewValue = e.CurrentValue;
+        BeginInvoke(new Action(() => RunOne(tweak, apply)));
+    }
+
+    bool operationInProgress;
+
+    bool RunOne(Tweak t, bool apply, bool skipConfirm = false, bool refresh = true)
+    {
+        if (operationInProgress == true)
         {
-            Log("공격적 옵션 적용을 취소했습니다.");
-            return;
+            return false;
         }
 
-        bool needReboot = false;
+        operationInProgress = true;
         Cursor = Cursors.WaitCursor;
-        foreach (ListViewItem item in list.CheckedItems)
+        bool changed = false;
+        bool needReboot = false;
+        try
         {
-            var t = tweaks[item.Index];
-            try
+            if (apply == true)
             {
-                if (apply == true)
+                if (t.IsApplied() == true)
                 {
-                    if (t.IsApplied() == true)
-                    {
-                        Log($"[건너뜀] {t.Title}: 이미 적용되어 있음");
-                        continue;
-                    }
-                    t.Apply();
-                    Log($"[적용] {t.Title}");
+                    Log($"[건너뜀] {t.Title}: 이미 적용되어 있음");
                 }
                 else
                 {
-                    t.Revert();
-                    if (t.IsApplied() == true)
+                    if (t.Aggressive == true && skipConfirm == false && ConfirmAggressive(t) == false)
                     {
-                        // 백업이 없음 = 이 프로그램 이전에 직접 설정한 값 → 원래 값을 모르므로 건드리지 않음
-                        Log($"[유지] {t.Title}: 직접 설정한 값이라 되돌릴 백업이 없음");
-                        continue;
+                        Log($"[취소] {t.Title}: 적용을 취소했습니다.");
                     }
-                    Log($"[되돌림] {t.Title}");
-                }
-                if (t.NeedsReboot == true)
-                {
-                    needReboot = true;
+                    else
+                    {
+                        t.Apply();
+                        if (t.IsApplied() == false)
+                        {
+                            throw new InvalidOperationException("적용 후에도 현재 설정에서 적용 상태가 확인되지 않습니다.");
+                        }
+                        Log($"[적용] {t.Title}");
+                        changed = true;
+                    }
                 }
             }
-            catch (Exception ex)
+            else
             {
-                Log($"[실패] {t.Title}: {ex.Message}");
+                t.Revert();
+                if (t.IsApplied() == true)
+                {
+                    Log($"[유지] {t.Title}: 되돌릴 백업이 없어 현재 설정을 유지했습니다.");
+                }
+                else
+                {
+                    Log($"[되돌림] {t.Title}");
+                    changed = true;
+                }
+            }
+            needReboot = changed && t.NeedsReboot == true;
+        }
+        catch (Exception ex)
+        {
+            Log($"[실패] {t.Title}: {ex.Message}");
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+            operationInProgress = false;
+            if (refresh == true)
+            {
+                RefreshList();
             }
         }
-        Cursor = Cursors.Default;
-
-        RefreshList();
         if (needReboot == true)
         {
             Log("※ 일부 항목은 재부팅(또는 재로그인) 후 완전히 반영됩니다.");
             MessageBox.Show(this, "일부 항목은 재부팅 후 완전히 반영됩니다.", "GameTuner", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+        return changed;
     }
 
-    // 아직 적용 안 된 공격적 옵션이 선택돼 있으면 위험 내용을 모아 한 번 더 확인
-    bool ConfirmAggressive()
+    bool ConfirmAggressive(Tweak t)
     {
-        var sb = new System.Text.StringBuilder();
-        foreach (ListViewItem item in list.CheckedItems)
-        {
-            var t = tweaks[item.Index];
-            if (t.Aggressive == false || t.IsApplied() == true)
-            {
-                continue;
-            }
-            sb.AppendLine($"■ {t.Title}");
-            sb.AppendLine(t.Risk);
-            sb.AppendLine();
-        }
-        if (sb.Length == 0)
-        {
-            return true;
-        }
-        sb.AppendLine("복원 지점을 먼저 만드는 것을 권장합니다. 계속할까요?");
-        var answer = MessageBox.Show(this, sb.ToString(), "공격적 옵션 적용 확인", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        string message = $"⚠ {t.Title}\n\n{t.Risk}\n\n복원 지점을 먼저 만드는 것을 권장합니다. 적용할까요?";
+        var answer = MessageBox.Show(this, message, "공격적 옵션 적용 확인", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
         return answer == DialogResult.Yes;
     }
 
-    // PC 환경을 감지해 효과 있는 항목만 체크 → 확인 후 적용
+    // PC 환경을 감지해 효과 있는 항목만 골라 요약 확인 후 적용
     async Task AutoOptimize()
     {
         Log("PC 환경 감지 중...");
@@ -1486,24 +1591,20 @@ class MainForm : Form
         summary.AppendLine();
         summary.AppendLine("적용할 항목:");
 
-        foreach (ListViewItem item in list.Items)
+        foreach (var t in tweaks)
         {
-            var t = tweaks[item.Index];
             if (t.IsApplied() == true)
             {
-                item.Checked = true;
                 continue;
             }
 
             string? skip = t.AutoSkip(env);
             if (skip != null)
             {
-                item.Checked = false;
                 Log($"[제외] {t.Title}: {skip}");
                 continue;
             }
 
-            item.Checked = true;
             picked.Add(t);
             if (t.Aggressive == true)
             {
@@ -1532,10 +1633,25 @@ class MainForm : Form
         var answer = MessageBox.Show(this, summary.ToString(), $"자동 최적화 — {picked.Count}개 항목", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
         if (answer != DialogResult.Yes)
         {
-            Log("자동 최적화를 취소했습니다. (추천 항목은 체크된 상태로 남아 있음)");
+            Log("자동 최적화를 취소했습니다.");
             return;
         }
-        Run(true, skipConfirm: true);
+
+        bool needReboot = false;
+        foreach (var t in picked)
+        {
+            bool changed = RunOne(t, true, skipConfirm: true, refresh: false);
+            if (changed == true && t.NeedsReboot == true)
+            {
+                needReboot = true;
+            }
+        }
+        RefreshList();
+        if (needReboot == true)
+        {
+            Log("※ 일부 항목은 재부팅(또는 재로그인) 후 완전히 반영됩니다.");
+            MessageBox.Show(this, "일부 항목은 재부팅 후 완전히 반영됩니다.", "GameTuner", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
     async Task CreateRestorePoint()
